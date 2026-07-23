@@ -348,7 +348,7 @@
     position:fixed;left:50%;top:16%;transform:translateX(-50%);z-index:70;
     background:var(--yellow);border:4px solid var(--ink);border-radius:12px;
     font-family:'Bangers',cursive;font-size:22px;letter-spacing:1px;padding:8px 18px;
-    box-shadow:5px 5px 0 rgba(0,0,0,.5);display:none;text-align:center;
+    box-shadow:5px 5px 0 rgba(0,0,0,.5);display:none;text-align:center;max-width:88vw;
   }
 
   /* ================= PAINÉIS ================= */
@@ -376,6 +376,12 @@
   .panel-body{padding:14px;overflow:auto;-webkit-overflow-scrolling:touch}
   .empty{text-align:center;color:var(--muted);font-family:'Patrick Hand',cursive;font-size:19px;padding:22px 0}
   .rowline{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+  .storagebar{
+    border:2.5px solid var(--ink);border-radius:10px;background:#fff;overflow:hidden;
+    height:16px;flex:1;min-width:120px;position:relative;
+  }
+  .storagebar i{display:block;height:100%;background:linear-gradient(90deg,#9be15d,#ffd23f 70%,#cf5c4b)}
+  .storagetxt{font-size:12px;font-weight:800;white-space:nowrap}
   .shelf-section{
     border:3px solid var(--ink);border-radius:12px;background:var(--paper2);
     box-shadow:4px 4px 0 rgba(26,23,20,.2);padding:12px;margin-bottom:16px;
@@ -572,9 +578,9 @@
 'use strict';
 /* ================================================================
    ARQUIVO POW! — Corredor Infinito de Metas
-   · SALA GRANDE: corredor largo e alto, colisão firme
-   · a parede que fica atrás da câmera some (rotação 360° limpa)
-   · sobe/desce em vez de inclinar · pintura no superzoom
+   · SALVAMENTO SEGURO: fotos compactadas + aviso se a memória encher
+   · sala grande, colisão, parede de trás some ao girar
+   · sobe/desce · pintura no superzoom · quebra com vidro e poeira
    Dados: localStorage 'guardador.de.links.v1'
    ================================================================ */
 
@@ -588,8 +594,8 @@ window.addEventListener('error', function(ev){
 });
 
 const KEY = 'guardador.de.links.v1';
-const HALFW = 900;                 /* corredor BEM largo (1800px de parede a parede) */
-const FLOOR_Y = 230, CEIL_Y = -820;/* pé-direito alto */
+const HALFW = 900;
+const FLOOR_Y = 230, CEIL_Y = -820;
 const PANEL_W = 340, PANEL_H = 470;
 const GAP = 700;
 const Z_START = 900;
@@ -598,7 +604,9 @@ const OBJ_MAXH = 118, OBJ_MINH = 52;
 const GRID = 24;
 const ROWS_Y = [120, 270, 420];
 const COLS_X = [26, 130, 234];
-const WALL_PAD = 300;              /* folga generosa até qualquer parede */
+const WALL_PAD = 300;
+const MAX_SIDE = 1200, JPEG_Q = 0.86;   /* compressão das fotos */
+const QUOTA_KB = 4800;                  /* teto prático do localStorage */
 
 const S = {
   data:null, view:'walk',
@@ -618,6 +626,29 @@ const clampX = x => Math.max(-HALFW+WALL_PAD, Math.min(HALFW-WALL_PAD, x));
 const clampZ = z => Math.max(S._zFar+WALL_PAD, Math.min(Z_START-WALL_PAD, z));
 const paintPctOf = t => Math.max(0, Math.min(100, Math.round(t.paint||0)));
 const grayFilterOf = t => 'grayscale('+(1 - paintPctOf(t)/100).toFixed(2)+')';
+
+/* ---------- COMPRESSÃO DE FOTO (o que resolve a perda de dados) ---------- */
+function compressImage(src, maxSide, quality, cb){
+  const im=new Image();
+  im.onload=()=>{
+    let w=im.naturalWidth||800, h=im.naturalHeight||800;
+    const ar = h>0 ? w/h : 1;
+    const scale=Math.min(1, maxSide/Math.max(w,h));
+    w=Math.max(1,Math.round(w*scale)); h=Math.max(1,Math.round(h*scale));
+    try{
+      const cv=document.createElement('canvas');
+      cv.width=w; cv.height=h;
+      const ctx=cv.getContext('2d');
+      ctx.fillStyle='#fff'; ctx.fillRect(0,0,w,h);
+      ctx.drawImage(im,0,0,w,h);
+      const out=cv.toDataURL('image/jpeg', quality);
+      cb((out && out.length<src.length) ? out : src, ar);
+    }catch(_){ cb(src, ar); }
+  };
+  im.onerror=()=>cb(src, 1);
+  im.src=src;
+}
+function dataKB(){ try{ return Math.round(JSON.stringify(S.data).length/1024); }catch(e){ return 0; } }
 
 function load(){
   try{
@@ -640,7 +671,37 @@ function migrate(d){
     if(typeof t.paint!=='number') t.paint=0;
   });
 }
-function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S.data)); }catch(e){} }
+/* salva de verdade e AVISA se não couber */
+function save(){
+  try{
+    localStorage.setItem(KEY, JSON.stringify(S.data));
+    S._saveFail=false;
+    return true;
+  }catch(e){
+    S._saveFail=true;
+    toast('MEMÓRIA CHEIA — não salvou! Use 🗜️ Compactar fotos');
+    return false;
+  }
+}
+/* recompacta todas as fotos guardadas para liberar espaço */
+function compactAll(done){
+  const list=S.data.trophies.filter(t=>t.image);
+  if(!list.length){ if(done) done(true); return; }
+  toast('Compactando fotos...');
+  let left=list.length;
+  list.forEach(t=>{
+    compressImage(t.image, 800, 0.62, out=>{
+      if(out && out.length<t.image.length) t.image=out;
+      if(--left===0){
+        const ok=save();
+        buildScene(); renderHUD();
+        if(S.view==='menu') renderUI();
+        if(ok) toast('Fotos compactadas! ('+dataKB()+' KB)');
+        if(done) done(ok);
+      }
+    });
+  });
+}
 
 function fixMissingAr(){
   if(S._arBusy) return;
@@ -725,7 +786,6 @@ function buildScene(){
   world.appendChild(face('floor-face', W, LEN, `translate3d(${-HALFW}px, ${FLOOR_Y}px, ${Z_START}px) rotateX(-90deg)`));
   world.appendChild(face('ceil-face',  W, LEN, `translate3d(${-HALFW}px, ${CEIL_Y}px, ${Z_START}px) rotateX(-90deg)`));
 
-  /* 4 paredes — cada uma some quando fica atrás da câmera */
   const wL = face('wall-face', LEN, WH, `translate3d(${-HALFW}px, ${CEIL_Y}px, ${Z_START}px) rotateY(90deg)`);
   const wR = face('wall-face', LEN, WH, `translate3d(${HALFW}px, ${CEIL_Y}px, ${Z_START-LEN}px) rotateY(-90deg)`);
   const wF = face('wall-face', W, WH, `translate3d(${-HALFW}px, ${CEIL_Y}px, ${Z_START-LEN}px)`);
@@ -1053,7 +1113,6 @@ function updateWorld(){
     const zc=dz*cyy-dx*syy;
     o.el.style.visibility=(zc>200)?'hidden':'';
   });
-  /* parede atrás da câmera some — rotação 360° sem furar a sala */
   if(S._wallFaces){
     const fx=Math.sin(rad(S.yaw)), fz=-Math.cos(rad(S.yaw));
     S._wallFaces.forEach(w=>{
@@ -1180,7 +1239,6 @@ holdBtn(document.getElementById('btnDown'), ()=>{ if(S.liftDir===1) S.liftDir=0;
 holdBtn(document.getElementById('btnZoomIn'),  ()=>{ if(S.zoomDir===1) S.zoomDir=0; }, ()=>S.zoomDir=1);
 holdBtn(document.getElementById('btnZoomOut'), ()=>{ if(S.zoomDir===-1) S.zoomDir=0; }, ()=>S.zoomDir=-1);
 
-/* arrastar: horizontal = girar · vertical = subir/descer */
 let dragMoved=false;
 (function(){
   const vp=document.getElementById('viewport');
@@ -1233,23 +1291,20 @@ let dragMoved=false;
   });
 })();
 
-/* ============ UPLOAD ============ */
+/* ============ UPLOAD (com compressão) ============ */
 function startUpload(shelfId){
   S._uploadShelf = shelfId || (S.data.shelves3d[0]&&S.data.shelves3d[0].id);
   document.getElementById('trophyFile').click();
 }
 document.getElementById('trophyFile').onchange = e=>{
   const file=e.target.files&&e.target.files[0]; if(!file) return;
+  toast('Preparando foto...');
   const r=new FileReader();
   r.onload=()=>{
-    const src=r.result, im=new Image();
-    const go=ar=>{
-      S.uploader={ image:src, shelfId:S._uploadShelf||S.data.shelves3d[0].id, shape:'bloco', size:1, name:'', ar:ar };
+    compressImage(r.result, MAX_SIDE, JPEG_Q, (out, ar)=>{
+      S.uploader={ image:out, shelfId:S._uploadShelf||S.data.shelves3d[0].id, shape:'bloco', size:1, name:'', ar:ar };
       S.view='uploader'; renderUI();
-    };
-    im.onload=()=>go(im.naturalHeight>0?im.naturalWidth/im.naturalHeight:86/96);
-    im.onerror=()=>go(86/96);
-    im.src=src;
+    });
   };
   r.readAsDataURL(file); e.target.value='';
 };
@@ -1258,7 +1313,8 @@ function addShelfAsk(cb){
   askText('Nova prateleira (tema)','ex: Viagens, Carro, Estudos...', name=>{
     const sh={id:uid(), name};
     S.data.shelves3d.push(sh);
-    save(); buildScene(); renderHUD();
+    if(!save()){ S.data.shelves3d.pop(); return; }
+    buildScene(); renderHUD();
     toast('Estante nova no corredor!');
     if(cb) cb(sh);
   });
@@ -1268,11 +1324,11 @@ function addShelfAsk(cb){
 function toast(msg){
   const t=document.getElementById('toast');
   t.textContent=msg; t.style.display='block';
-  clearTimeout(t._h); t._h=setTimeout(()=>{ t.style.display='none'; },1700);
+  clearTimeout(t._h); t._h=setTimeout(()=>{ t.style.display='none'; },2200);
 }
 function askYes(msg,onYes){
   const veil=el('div','overlay-veil'); veil.style.zIndex='90';
-  const panel=el('div','panel'); panel.style.width='min(420px,94vw)';
+  const panel=el('div','panel'); panel.style.width='min(430px,94vw)';
   const body=el('div','panel-body');
   body.appendChild(el('div',null,'<div style="font-family:\'Patrick Hand\',cursive;font-size:20px;margin-bottom:14px">'+esc(msg)+'</div>'));
   const row=el('div','rowline');
@@ -1441,7 +1497,7 @@ function smashAt(t, lad){
 function renderHUD(){
   const a=aliveAll().length, b=brokenAll().length, s=S.data.shelves3d.length;
   document.getElementById('totalMeta').textContent =
-    plural(s,'estante')+' · '+plural(a,'meta')+' · '+b+' concluída'+(b===1?'':'s');
+    plural(s,'estante')+' · '+plural(a,'meta')+' · '+b+' concluída'+(b===1?'':'s')+' · '+dataKB()+' KB';
 }
 function openMenu(){ softClearFocus(); S.view='menu'; renderUI(); }
 function closeAll(){ S.view='walk'; S.uploader=null; renderUI(); }
@@ -1465,6 +1521,20 @@ function panelShell(title){
 }
 function renderMenu(){
   const {veil, body}=panelShell('Minhas Metas');
+
+  /* barra de espaço usado + compactar */
+  const kb=dataKB();
+  const pctUse=Math.min(100, Math.round(kb/QUOTA_KB*100));
+  const barRow=el('div','rowline');
+  const bar=el('div','storagebar'); bar.innerHTML='<i style="width:'+pctUse+'%"></i>';
+  barRow.appendChild(bar);
+  barRow.appendChild(el('span','storagetxt', kb+' KB usados ('+pctUse+'%)'));
+  const bComp=el('button','btn mini','🗜️ Compactar fotos');
+  bComp.onclick=()=>compactAll();
+  barRow.appendChild(bComp);
+  body.appendChild(barRow);
+  if(pctUse>80) body.appendChild(el('div',null,'<div style="font-family:\'Patrick Hand\',cursive;font-size:16px;color:#a33;margin:-4px 0 12px">Espaço quase no limite! Compacte as fotos ou exporte um backup.</div>'));
+
   const line=el('div','rowline');
   const bShelf=el('button','btn yellow','+ nova estante');
   bShelf.onclick=()=>addShelfAsk(()=>renderUI());
@@ -1604,14 +1674,26 @@ function renderUploader(){
   });
   fields.appendChild(sizes);
 
-  fields.appendChild(el('div',null,'<div style="font-family:\'Patrick Hand\',cursive;font-size:14px;color:var(--muted)">O objeto nasce em preto e branco, no formato exato da foto. Dê zoom nele e pinte arrastando até 100%!</div>'));
+  fields.appendChild(el('div',null,'<div style="font-family:\'Patrick Hand\',cursive;font-size:14px;color:var(--muted)">Foto já otimizada ('+Math.round(up.image.length/1024)+' KB). O objeto nasce em preto e branco, no formato da foto — dê zoom nele e pinte!</div>'));
 
   const actions=el('div','rowline'); actions.style.marginTop='6px';
   const ok=el('button','btn green','Colocar na estante');
   ok.onclick=()=>{
-    S.data.trophies.push({ id:uid(), name:up.name.trim(), image:up.image, broken:false, shape:up.shape, size:up.size, shelfId:up.shelfId, ar:up.ar, paint:0 });
-    save(); closeAll(); buildScene(); renderHUD();
-    toast('Objeto na estante! Pinte ele!');
+    const item={ id:uid(), name:up.name.trim(), image:up.image, broken:false, shape:up.shape, size:up.size, shelfId:up.shelfId, ar:up.ar, paint:0 };
+    S.data.trophies.push(item);
+    if(!save()){
+      S.data.trophies.pop();
+      askYes('A foto não coube na memória. Compactar todas as fotos e tentar de novo?', ()=>{
+        compactAll(()=>{
+          S.data.trophies.push(item);
+          if(save()){ closeAll(); buildScene(); renderHUD(); toast('Salvo com sucesso!'); }
+          else { S.data.trophies.pop(); toast('Ainda sem espaço — apague metas antigas'); }
+        });
+      });
+      return;
+    }
+    closeAll(); buildScene(); renderHUD();
+    toast('Salvo! ('+dataKB()+' KB usados)');
   };
   const cancel=el('button','btn','Cancelar'); cancel.onclick=closeAll;
   actions.appendChild(ok); actions.appendChild(cancel);
@@ -1624,8 +1706,9 @@ function renderUploader(){
 function exportJSON(){
   const blob=new Blob([JSON.stringify(S.data,null,2)],{type:'application/json'});
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
-  a.download='guardador-de-links.json'; document.body.appendChild(a); a.click();
+  a.download='arquivo-pow-backup.json'; document.body.appendChild(a); a.click();
   a.remove(); URL.revokeObjectURL(a.href);
+  toast('Backup baixado!');
 }
 document.getElementById('importFile').onchange = e=>{
   const file=e.target.files&&e.target.files[0]; if(!file) return;
@@ -1634,7 +1717,9 @@ document.getElementById('importFile').onchange = e=>{
     try{
       const d=JSON.parse(r.result);
       if(d&&typeof d==='object'){
-        migrate(d); S.data=d; save(); softClearFocus();
+        migrate(d); S.data=d;
+        if(save()) toast('Backup restaurado!');
+        softClearFocus();
         Object.assign(S,{view:'walk',cx:0,cy:0,cz:400,yaw:0,zoom:1,uploader:null,camTween:null});
         applyZoom(); buildScene(); renderHUD(); renderUI(); fixMissingAr();
       } else toast('Arquivo inválido.');
@@ -1652,7 +1737,8 @@ document.getElementById('btnImport').onclick=()=>document.getElementById('import
 
 /* ---------- start ---------- */
 try{
-  S.data=load(); save();
+  S.data=load();
+  save();
   buildScene(); renderHUD(); renderUI(); fixMissingAr();
 }catch(err){
   var b=document.getElementById('errbox');
