@@ -493,7 +493,6 @@
 </div>
 <div id="vignette"></div>
 
-<!-- BONECO DE TERNO -->
 <svg id="hero" viewBox="0 0 150 270" aria-hidden="true">
   <g class="part legL">
     <rect x="52" y="156" width="23" height="80" rx="8" fill="#22252d" stroke="#111318" stroke-width="4"/>
@@ -573,9 +572,9 @@
 'use strict';
 /* ================================================================
    ARQUIVO POW! — Corredor Infinito de Metas
-   · corredor sem fim: estantes de vidro com pés dos dois lados
-   · SEM inclinar câmera: arraste vertical / ⇧⇩ / R,F sobem e descem
-   · objeto P&B que você pinta no superzoom · quebra com vidro e poeira
+   · corredor FECHADO nas 4 paredes + colisão (não atravessa nada)
+   · sem inclinar câmera: arraste vertical / ⇧⇩ / R,F sobem e descem
+   · objeto P&B pintável no superzoom · quebra com vidro e poeira
    Dados: localStorage 'guardador.de.links.v1'
    ================================================================ */
 
@@ -589,22 +588,24 @@ window.addEventListener('error', function(ev){
 });
 
 const KEY = 'guardador.de.links.v1';
-const HALFW = 470;                 /* meia largura do corredor */
+const HALFW = 470;
 const FLOOR_Y = 230, CEIL_Y = -620;
 const PANEL_W = 340, PANEL_H = 470;
-const GAP = 620;                   /* espaço entre estantes do mesmo lado */
-const Z_START = 620;               /* início do corredor (atrás da câmera) */
+const GAP = 620;
+const Z_START = 620;
 const NEAR = 520;
 const OBJ_MAXH = 118, OBJ_MINH = 52;
 const GRID = 24;
-const ROWS_Y = [120, 270, 420];    /* alturas das 3 prateleiras de vidro */
+const ROWS_Y = [120, 270, 420];
 const COLS_X = [26, 130, 234];
+const WALL_PAD = 215;                  /* distância mínima de qualquer parede */
 
 const S = {
   data:null, view:'walk',
   cx:0, cy:0, cz:180, yaw:0, zoom:1,
   walkDir:0, rotDir:0, strafeDir:0, zoomDir:0, liftDir:0,
-  throwing:false, focus:null, camTween:null, uploader:null, _paintCard:null
+  throwing:false, focus:null, camTween:null, uploader:null, _paintCard:null,
+  _zFar:-2600
 };
 
 const uid = () => Math.random().toString(36).slice(2,9) + Date.now().toString(36).slice(-3);
@@ -613,6 +614,9 @@ const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;'
 const plural = (n,s) => n+' '+s+(n===1?'':'s');
 const rad = d => d*Math.PI/180;
 const clampY = v => Math.max(CEIL_Y+150, Math.min(FLOOR_Y-70, v));
+/* ---- COLISÃO: nunca passa das paredes ---- */
+const clampX = x => Math.max(-HALFW+WALL_PAD, Math.min(HALFW-WALL_PAD, x));
+const clampZ = z => Math.max(S._zFar+WALL_PAD, Math.min(Z_START-WALL_PAD, z));
 const paintPctOf = t => Math.max(0, Math.min(100, Math.round(t.paint||0)));
 const grayFilterOf = t => 'grayscale('+(1 - paintPctOf(t)/100).toFixed(2)+')';
 
@@ -679,13 +683,12 @@ function moduleList(){
   });
   return mods;
 }
-/* corredor cresce conforme o número de estantes — sem limite */
 function corridorLen(){
   const n = moduleList().length;
   return Math.max(2600, Math.ceil(n/2)*GAP + 1800);
 }
 function unitPlace(u){
-  const side = u%2;                       /* 0 esquerda, 1 direita */
+  const side = u%2;
   const k = Math.floor(u/2);
   const zBase = -k*GAP - 320 - (side? GAP/2 : 0);
   const top = FLOOR_Y - PANEL_H;
@@ -694,7 +697,6 @@ function unitPlace(u){
   return { side, zBase, cx:HALFW, cz:zBase+PANEL_W/2,
     t:`translate3d(${HALFW-8}px, ${top}px, ${zBase}px) rotateY(-90deg)` };
 }
-/* converte X local do painel em Z do mundo */
 function localToWorldZ(P, localX){
   return P.side===0 ? (P.zBase + PANEL_W - localX) : (P.zBase + localX);
 }
@@ -721,12 +723,14 @@ function buildScene(){
   const W=HALFW*2;
   S._zFar = Z_START - LEN;
 
-  /* chão / teto */
   world.appendChild(face('floor-face', W, LEN, `translate3d(${-HALFW}px, ${FLOOR_Y}px, ${Z_START}px) rotateX(-90deg)`));
   world.appendChild(face('ceil-face',  W, LEN, `translate3d(${-HALFW}px, ${CEIL_Y}px, ${Z_START}px) rotateX(-90deg)`));
-  /* paredes laterais do corredor */
+  /* laterais */
   world.appendChild(face('wall-face', LEN, WH, `translate3d(${-HALFW}px, ${CEIL_Y}px, ${Z_START}px) rotateY(90deg)`));
   world.appendChild(face('wall-face', LEN, WH, `translate3d(${HALFW}px, ${CEIL_Y}px, ${Z_START-LEN}px) rotateY(-90deg)`));
+  /* fundo e costas — corredor fechado, nada de vazar */
+  world.appendChild(face('wall-face', W, WH, `translate3d(${-HALFW}px, ${CEIL_Y}px, ${Z_START-LEN}px)`));
+  world.appendChild(face('wall-face', W, WH, `translate3d(${HALFW}px, ${CEIL_Y}px, ${Z_START}px) rotateY(180deg)`));
 
   mods.forEach((M,u)=>{
     const P=unitPlace(u);
@@ -785,7 +789,7 @@ function buildScene(){
     if(M.part===0){
       brokenIn(M.shelf.id).forEach((t,i)=>{
         const pw=190, ph=110;
-        const px = P.side===0 ? (P.cx+150+ i*20) : (P.cx-150- i*20);
+        const px = P.side===0 ? (P.cx+150+i*20) : (P.cx-150-i*20);
         const pz = P.cz + (i%2? 150 : -150) - i*60;
         const pile=face('pile-face', pw, ph, `translate3d(${px-pw/2}px, ${FLOOR_Y-2}px, ${pz+ph/2}px) rotateX(-90deg)`);
         const rnd=mulberry(t.id);
@@ -870,7 +874,7 @@ function focusObject(t, u, r, tr){
   const saved = S.focus ? S.focus.saved : {cx:S.cx, cy:S.cy, cz:S.cz, yaw:S.yaw, zoom:S.zoom};
   softClearFocus();
   const size=t.size||1;
-  const dist=250+(size-1)*70;
+  const dist=Math.max(WALL_PAD+20, 250+(size-1)*70);
   const localX=tr ? (parseFloat(tr.style.left)+(tr._w||86)/2) : PANEL_W/2;
   const worldZ=localToWorldZ(m, localX);
   const cx = m.side===0 ? (-HALFW+dist) : (HALFW-dist);
@@ -878,7 +882,7 @@ function focusObject(t, u, r, tr){
   const objY = (FLOOR_Y-PANEL_H) + ROWS_Y[r||0] - (tr? tr._h/2 : 55);
   const zoom = size===1?2.2 : size===2?1.7 : 1.35;
   S.focus={ tid:t.id, saved, t, u, r, trEl:tr };
-  camTo({cx, cy:clampY(objY), cz:worldZ, yaw, zoom}, 520);
+  camTo({cx:clampX(cx), cy:clampY(objY), cz:clampZ(worldZ), yaw, zoom}, 520);
   hero.style.opacity='.2';
   showFocusUI(t,u,r);
   setTimeout(()=>{
@@ -1039,7 +1043,7 @@ function tapPick(x,y){
   return false;
 }
 
-/* ---------- câmera (sem inclinação: só sobe/desce) ---------- */
+/* ---------- câmera ---------- */
 function updateWorld(){
   world.style.transform = `rotateY(${S.yaw}deg) translate3d(${-S.cx}px, ${-S.cy}px, ${-S.cz}px)`;
   const cy=Math.cos(rad(S.yaw)), sy=Math.sin(rad(S.yaw));
@@ -1084,23 +1088,24 @@ function tick(t){
   let moving=false;
   if(S.view==='walk' && !S.throwing && !S.focus && !S.camTween){
     if(S.rotDir!==0) S.yaw += S.rotDir*.11*dt;
+    /* movimento com COLISÃO por eixo (desliza rente à parede) */
     if(S.walkDir!==0){
       const v=S.walkDir*.45*dt;
-      S.cx += Math.sin(rad(S.yaw))*v;
-      S.cz += -Math.cos(rad(S.yaw))*v;
+      S.cx = clampX(S.cx + Math.sin(rad(S.yaw))*v);
+      S.cz = clampZ(S.cz + (-Math.cos(rad(S.yaw)))*v);
       moving=true;
     }
     if(S.strafeDir!==0){
       const v=S.strafeDir*.40*dt;
-      S.cx += Math.cos(rad(S.yaw))*v;
-      S.cz += Math.sin(rad(S.yaw))*v;
+      S.cx = clampX(S.cx + Math.cos(rad(S.yaw))*v);
+      S.cz = clampZ(S.cz + Math.sin(rad(S.yaw))*v);
       moving=true;
     }
     if(S.liftDir!==0) S.cy = clampY(S.cy + S.liftDir*.55*dt);
     if(S.zoomDir!==0) zoomBy(S.zoomDir*.55*dt);
   }
-  S.cx=Math.max(-HALFW+120, Math.min(HALFW-120, S.cx));
-  S.cz=Math.max((S._zFar||-2600)+180, Math.min(Z_START-160, S.cz));
+  S.cx=clampX(S.cx);
+  S.cz=clampZ(S.cz);
   S.cy=clampY(S.cy);
   updateWorld();
   hero.classList.toggle('walking', moving && !S.throwing);
@@ -1112,8 +1117,8 @@ function zoomBy(amount){
   if(amount<0 && S.zoom>1){ S.zoom=Math.max(1,S.zoom+amount*0.004); applyZoom(); return; }
   const nx=S.cx+Math.sin(rad(S.yaw))*amount;
   const nz=S.cz+(-Math.cos(rad(S.yaw)))*amount;
-  const cx=Math.max(-HALFW+120, Math.min(HALFW-120, nx));
-  const cz=Math.max((S._zFar||-2600)+180, Math.min(Z_START-160, nz));
+  const cx=clampX(nx);
+  const cz=clampZ(nz);
   const moved=Math.hypot(cx-S.cx, cz-S.cz);
   S.cx=cx; S.cz=cz;
   if(amount>0 && moved<Math.abs(amount)*0.45){ S.zoom=Math.min(3,S.zoom+amount*0.004); applyZoom(); }
@@ -1136,8 +1141,8 @@ window.addEventListener('keydown', e=>{
   if(k==='d'||e.key==='ArrowRight'){ S.rotDir=1; e.preventDefault(); }
   if(k==='q'){ S.strafeDir=-1; e.preventDefault(); }
   if(k==='e'){ S.strafeDir=1; e.preventDefault(); }
-  if(k==='r'){ S.liftDir=-1; e.preventDefault(); }   /* sobe */
-  if(k==='f'){ S.liftDir=1;  e.preventDefault(); }   /* desce */
+  if(k==='r'){ S.liftDir=-1; e.preventDefault(); }
+  if(k==='f'){ S.liftDir=1;  e.preventDefault(); }
   if(e.key==='Enter') openMenu();
 });
 window.addEventListener('keyup', e=>{
@@ -1170,7 +1175,7 @@ holdBtn(document.getElementById('btnDown'), ()=>{ if(S.liftDir===1) S.liftDir=0;
 holdBtn(document.getElementById('btnZoomIn'),  ()=>{ if(S.zoomDir===1) S.zoomDir=0; }, ()=>S.zoomDir=1);
 holdBtn(document.getElementById('btnZoomOut'), ()=>{ if(S.zoomDir===-1) S.zoomDir=0; }, ()=>S.zoomDir=-1);
 
-/* arrastar: horizontal = girar · vertical = SUBIR/DESCER (sem inclinar) */
+/* arrastar: horizontal = girar · vertical = subir/descer */
 let dragMoved=false;
 (function(){
   const vp=document.getElementById('viewport');
@@ -1193,7 +1198,7 @@ let dragMoved=false;
       if(Math.abs(e.clientX-startX)+Math.abs(e.clientY-startY)>11) dragMoved=true;
       if(dragMoved && !S.focus && !S.camTween){
         S.yaw += dx*0.22;
-        S.cy = clampY(S.cy - dy*0.9);   /* arrasta pra baixo = sobe */
+        S.cy = clampY(S.cy - dy*0.9);
       }
     } else if(pts.size===2){
       const a=[...pts.values()];
